@@ -1,60 +1,82 @@
-# mcp server with 2 tools:
-# 1. add_numbers: add two numbers and return the result
-# 2. generate_random_number: generate a random number within a given range
-
-import random
 from fastmcp import FastMCP
+import os
+import sqlite3
 
-# create an instance of FastMCP with a name for the server
-mcp = FastMCP("Simple Calculator Server")
+DB_PATH = os.path.join(os.path.dirname(__file__), "expenses.db")
+CATEGORIES_PATH = os.path.join(os.path.dirname(__file__), "categories.json")
 
-# Tool 1: add two numbers
-@mcp.tool
-def add_numbers(a: float, b: float) -> float:
-    """
-    Add two numbers and return the result.
+mcp = FastMCP("ExpenseTracker")
 
-    Args:
-        a (float): The first number.
-        b (float): The second number.
+def init_db():
+    with sqlite3.connect(DB_PATH) as c:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS expenses(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                amount REAL NOT NULL,
+                category TEXT NOT NULL,
+                subcategory TEXT DEFAULT '',
+                note TEXT DEFAULT ''
+            )
+        """)
 
-    Returns:
-        float: The sum of the two numbers.
-    """
-    return a + b
+init_db()
 
-# Tool 2: Generate a random number within a given range
-@mcp.tool
-def generate_random_number(min_value: int=1, max_value: int=100) -> int:
-    """
-    Generate a random number within a given range.
+@mcp.tool()
+def add_expense(date, amount, category, subcategory="", note=""):
+    '''Add a new expense entry to the database.'''
+    with sqlite3.connect(DB_PATH) as c:
+        cur = c.execute(
+            "INSERT INTO expenses(date, amount, category, subcategory, note) VALUES (?,?,?,?,?)",
+            (date, amount, category, subcategory, note)
+        )
+        return {"status": "ok", "id": cur.lastrowid}
+    
+@mcp.tool()
+def list_expenses(start_date, end_date):
+    '''List expense entries within an inclusive date range.'''
+    with sqlite3.connect(DB_PATH) as c:
+        cur = c.execute(
+            """
+            SELECT id, date, amount, category, subcategory, note
+            FROM expenses
+            WHERE date BETWEEN ? AND ?
+            ORDER BY id ASC
+            """,
+            (start_date, end_date)
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
 
-    Args:
-        min_value (int): The minimum value of the range.
-        max_value (int): The maximum value of the range.
+@mcp.tool()
+def summarize(start_date, end_date, category=None):
+    '''Summarize expenses by category within an inclusive date range.'''
+    with sqlite3.connect(DB_PATH) as c:
+        query = (
+            """
+            SELECT category, SUM(amount) AS total_amount
+            FROM expenses
+            WHERE date BETWEEN ? AND ?
+            """
+        )
+        params = [start_date, end_date]
 
-    Returns:
-        int: A random number between min_value and max_value (inclusive).
-    """
-    return random.randint(min_value, max_value)
+        if category:
+            query += " AND category = ?"
+            params.append(category)
 
-# Resource: Server information
-@mcp.resource("info://server")
-def server_info() -> dict:
-    """
-    Provide information about the server.
+        query += " GROUP BY category ORDER BY category ASC"
 
-    Returns:
-        dict: A dictionary containing server information.
-    """
-    return {
-        "server_name": mcp.name,
-        "version": "1.0",
-        "description": "A simple calculator server with basic arithmetic and random number generation.",
-        "tools": ["add_numbers", "generate_random_number"],
-        "resources": ["server_info"],
-        "author": "Sumit Das",
-    }
+        cur = c.execute(query, params)
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+@mcp.resource("expense://categories", mime_type="application/json")
+def categories():
+    # Read fresh each time so you can edit the file without restarting
+    with open(CATEGORIES_PATH, "r", encoding="utf-8") as f:
+        return f.read()
+
 
 # run the server
 if __name__ == "__main__":
